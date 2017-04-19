@@ -100,16 +100,9 @@ def bench_linux_literal(suite_dir):
         return Command(*args, **kwargs)
 
     return Benchmark(pattern=pat, commands=[
-        mkcmd('rg (ignore)', ['rg', '-n', pat]),
-        mkcmd('rg (ignore) (mmap)', ['rg', '-n', '--mmap', pat]),
-        mkcmd('ag (ignore) (mmap)', ['ag', '-s', pat]),
-        mkcmd('pt (ignore)', ['pt', pat]),
-        mkcmd('sift (ignore)', SIFT + ['-n', '--git', pat]),
-        mkcmd('git grep (ignore)', [
-            'git', 'grep', '-I', '-n', pat,
-        ], env={'LC_ALL': 'C'}),
-        mkcmd('rg (whitelist)', ['rg', '-n', '--no-ignore', '-tall', pat]),
-        mkcmd('ucg (whitelist)', ['ucg', '--nosmart-case', pat]),
+        mkcmd('rg (current)', ['/home/brian/build/ripgrep/target/release/rg', '-n', pat]),
+        mkcmd('rg (master)', ['rg.master', '-n', pat]),
+        mkcmd('rg (old)', ['rg.good', '-n', pat]),
     ])
 
 

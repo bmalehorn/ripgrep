@@ -4,13 +4,13 @@ use std::fmt;
 use std::fs::{self, FileType, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 use std::vec;
+use std::collections::BinaryHeap;
 
-use crossbeam::sync::MsQueue;
 use same_file::Handle;
 use walkdir::{self, WalkDir};
 
@@ -965,7 +965,7 @@ impl WalkParallel {
     ) where F: FnMut() -> Box<FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static> {
         let mut f = mkf();
         let threads = self.threads();
-        let queue = Arc::new(MsQueue::new());
+        let pq = Arc::new(Mutex::new(BinaryHeap::with_capacity(1000)));
         let mut any_work = false;
         // Send the initial set of root paths to the pool of workers.
         // Note that we only send directories. For files, we send to them the
@@ -985,7 +985,7 @@ impl WalkParallel {
                         }
                     }
                 };
-            queue.push(Message::Work(Work {
+            pq.lock().unwrap().push(Message::Work(Work {
                 dent: dent,
                 ignore: self.ig_root.clone(),
             }));
@@ -1003,7 +1003,7 @@ impl WalkParallel {
         for _ in 0..threads {
             let worker = Worker {
                 f: mkf(),
-                queue: queue.clone(),
+                pq: pq.clone(),
                 quit_now: quit_now.clone(),
                 is_waiting: false,
                 is_quitting: false,
@@ -1032,6 +1032,7 @@ impl WalkParallel {
 }
 
 /// Message is the set of instructions that a worker knows how to process.
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
 enum Message {
     /// A work item corresponds to a directory that should be descended into.
     /// Work items for entries that should be skipped or ignored should not
@@ -1045,11 +1046,33 @@ enum Message {
 ///
 /// Each unit of work corresponds to a directory that should be descended
 /// into.
+#[derive(Debug)]
 struct Work {
     /// The directory entry.
     dent: DirEntry,
     /// Any ignore matchers that have been built for this directory's parents.
     ignore: Ignore,
+}
+
+impl Eq for Work {
+}
+
+impl PartialEq for Work {
+    fn eq(&self, other: &Work) -> bool {
+        self.dent.path() == other.dent.path()
+    }
+}
+
+impl Ord for Work {
+    fn cmp(&self, other: &Work) -> cmp::Ordering {
+        other.dent.path().as_os_str().cmp(&self.dent.path().as_os_str())
+    }
+}
+
+impl PartialOrd for Work {
+    fn partial_cmp(&self, other: &Work) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Work {
@@ -1109,8 +1132,8 @@ impl Work {
 struct Worker {
     /// The caller's callback.
     f: Box<FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static>,
-    /// A queue of work items. This is multi-producer and multi-consumer.
-    queue: Arc<MsQueue<Message>>,
+    /// A priority queue of work items. This is multi-producer and multi-consumer.
+    pq: Arc<Mutex<BinaryHeap<Message>>>,
     /// Whether all workers should quit at the next opportunity. Note that
     /// this is distinct from quitting because of exhausting the contents of
     /// a directory. Instead, this is used when the caller's callback indicates
@@ -1186,11 +1209,23 @@ impl Worker {
             if self.max_depth.map_or(false, |max| depth >= max) {
                 continue;
             }
+
+            let mut a: Vec<Message> = Vec::with_capacity(20);
+
             for result in readdir {
-                if self.run_one(&work.ignore, depth + 1, result).is_quit() {
-                    self.quit_now();
-                    return;
+                let (ws, e) = self.run_one(&work.ignore, depth + 1, result);
+                match (ws.is_quit(), e) {
+                    (true, _) => {
+                        self.quit_now();
+                        return;
+                    },
+                    (false, Some(work)) => a.push(work),
+                    (false, None) => { }
                 }
+            }
+            let mut pq = self.pq.lock().unwrap();
+            for work in a {
+                pq.push(work);
             }
         }
     }
@@ -1212,17 +1247,17 @@ impl Worker {
         ig: &Ignore,
         depth: usize,
         result: Result<fs::DirEntry, io::Error>,
-    ) -> WalkState {
+    ) -> (WalkState, Option<Message>) {
         let fs_dent = match result {
             Ok(fs_dent) => fs_dent,
             Err(err) => {
-                return (self.f)(Err(Error::from(err).with_depth(depth)));
+                return ((self.f)(Err(Error::from(err).with_depth(depth))), None);
             }
         };
         let mut dent = match DirEntryRaw::from_entry(depth, &fs_dent) {
             Ok(dent) => DirEntry::new_raw(dent, None),
             Err(err) => {
-                return (self.f)(Err(err));
+                return ((self.f)(Err(err)), None);
             }
         };
         let is_symlink = dent.file_type().map_or(false, |ft| ft.is_symlink());
@@ -1231,12 +1266,12 @@ impl Worker {
             dent = match DirEntryRaw::from_link(depth, path) {
                 Ok(dent) => DirEntry::new_raw(dent, None),
                 Err(err) => {
-                    return (self.f)(Err(err));
+                    return ((self.f)(Err(err)), None);
                 }
             };
             if dent.is_dir() {
                 if let Err(err) = check_symlink_loop(ig, dent.path(), depth) {
-                    return (self.f)(Err(err));
+                    return ((self.f)(Err(err)), None);
                 }
             }
         }
@@ -1249,13 +1284,15 @@ impl Worker {
             false
         };
 
+        let mut res = None;
+
         if !should_skip_path && !should_skip_filesize {
-            self.queue.push(Message::Work(Work {
+            res = Some(Message::Work(Work {
                 dent: dent,
                 ignore: ig.clone(),
             }));
         }
-        WalkState::Continue
+        (WalkState::Continue, res)
     }
 
     /// Returns the next directory to descend into.
@@ -1267,7 +1304,8 @@ impl Worker {
             if self.is_quit_now() {
                 return None;
             }
-            match self.queue.try_pop() {
+            let x = self.pq.lock().unwrap().pop();
+            match x {
                 Some(Message::Work(work)) => {
                     self.waiting(false);
                     self.quitting(false);
@@ -1309,7 +1347,7 @@ impl Worker {
                     self.quitting(false);
                     if self.num_waiting() == self.threads {
                         for _ in 0..self.threads {
-                            self.queue.push(Message::Quit);
+                            self.pq.lock().unwrap().push(Message::Quit);
                         }
                     } else {
                         // You're right to consider this suspicious, but it's
