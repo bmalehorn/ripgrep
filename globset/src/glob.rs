@@ -187,13 +187,26 @@ pub struct GlobBuilder<'a> {
     opts: GlobOptions,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct GlobOptions {
     /// Whether to match case insensitively.
     case_insensitive: bool,
     /// Whether to require a literal separator to match a separator in a file
     /// path. e.g., when enabled, `*` won't match `/`.
     literal_separator: bool,
+    /// Whether or not to use `\` to escape special characters.
+    /// e.g., when enabled, `\*` will match a literal `*`.
+    backslash_escape: bool,
+}
+
+impl GlobOptions {
+    fn default() -> GlobOptions {
+        GlobOptions {
+            case_insensitive: false,
+            literal_separator: false,
+            backslash_escape: !is_separator('\\'),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -549,6 +562,7 @@ impl<'a> GlobBuilder<'a> {
             chars: self.glob.chars().peekable(),
             prev: None,
             cur: None,
+            opts: &self.opts,
         };
         p.parse()?;
         if p.stack.is_empty() {
@@ -583,6 +597,19 @@ impl<'a> GlobBuilder<'a> {
     /// Toggle whether a literal `/` is required to match a path separator.
     pub fn literal_separator(&mut self, yes: bool) -> &mut GlobBuilder<'a> {
         self.opts.literal_separator = yes;
+        self
+    }
+
+    /// When enabled, a back slash (`\`) may be used to escape
+    /// special characters in a glob pattern. Additionally, this will
+    /// prevent `\` from being interpreted as a path separator on all
+    /// platforms.
+    ///
+    /// This is enabled by default on platforms where `\` is not a
+    /// path separator and disabled by default on platforms where `\`
+    /// is a path separator.
+    pub fn backslash_escape(&mut self, yes: bool) -> &mut GlobBuilder<'a> {
+        self.opts.backslash_escape = yes;
         self
     }
 }
@@ -710,6 +737,7 @@ struct Parser<'a> {
     chars: iter::Peekable<str::Chars<'a>>,
     prev: Option<char>,
     cur: Option<char>,
+    opts: &'a GlobOptions,
 }
 
 impl<'a> Parser<'a> {
@@ -726,14 +754,8 @@ impl<'a> Parser<'a> {
                 '{' => self.push_alternate()?,
                 '}' => self.pop_alternate()?,
                 ',' => self.parse_comma()?,
-                c => {
-                    if is_separator(c) {
-                        // Normalize all patterns to use / as a separator.
-                        self.push_token(Token::Literal('/'))?
-                    } else {
-                        self.push_token(Token::Literal(c))?
-                    }
-                }
+                '\\' => self.parse_backslash()?,
+                c => self.push_token(Token::Literal(c))?,
             }
         }
         Ok(())
@@ -783,6 +805,20 @@ impl<'a> Parser<'a> {
             self.push_token(Token::Literal(','))
         } else {
             Ok(self.stack.push(Tokens::default()))
+        }
+    }
+
+    fn parse_backslash(&mut self) -> Result<(), Error> {
+        if self.opts.backslash_escape {
+            match self.bump() {
+                None => Err(self.error(ErrorKind::DanglingEscape)),
+                Some(c) => self.push_token(Token::Literal(c)),
+            }
+        } else if is_separator('\\') {
+            // Normalize all patterns to use / as a separator.
+            self.push_token(Token::Literal('/'))
+        } else {
+            self.push_token(Token::Literal('\\'))
         }
     }
 
