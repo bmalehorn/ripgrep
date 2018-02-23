@@ -969,8 +969,9 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Default)]
     struct Options {
-        casei: bool,
-        litsep: bool,
+        casei: Option<bool>,
+        litsep: Option<bool>,
+        bsesc: Option<bool>,
     }
 
     macro_rules! syntax {
@@ -1000,11 +1001,17 @@ mod tests {
         ($name:ident, $pat:expr, $re:expr, $options:expr) => {
             #[test]
             fn $name() {
-                let pat = GlobBuilder::new($pat)
-                    .case_insensitive($options.casei)
-                    .literal_separator($options.litsep)
-                    .build()
-                    .unwrap();
+                let mut builder = GlobBuilder::new($pat);
+                if let Some(casei) = $options.casei {
+                    builder.case_insensitive(casei);
+                }
+                if let Some(litsep) = $options.litsep {
+                    builder.literal_separator(litsep);
+                }
+                if let Some(bsesc) = $options.bsesc {
+                    builder.backslash_escape(bsesc);
+                }
+                let pat = builder.build().unwrap();
                 assert_eq!(format!("(?-u){}", $re), pat.regex());
             }
         };
@@ -1017,11 +1024,17 @@ mod tests {
         ($name:ident, $pat:expr, $path:expr, $options:expr) => {
             #[test]
             fn $name() {
-                let pat = GlobBuilder::new($pat)
-                    .case_insensitive($options.casei)
-                    .literal_separator($options.litsep)
-                    .build()
-                    .unwrap();
+                let mut builder = GlobBuilder::new($pat);
+                if let Some(casei) = $options.casei {
+                    builder.case_insensitive(casei);
+                }
+                if let Some(litsep) = $options.litsep {
+                    builder.literal_separator(litsep);
+                }
+                if let Some(bsesc) = $options.bsesc {
+                    builder.backslash_escape(bsesc);
+                }
+                let pat = builder.build().unwrap();
                 let matcher = pat.compile_matcher();
                 let strategic = pat.compile_strategic_matcher();
                 let set = GlobSetBuilder::new().add(pat).build().unwrap();
@@ -1039,11 +1052,17 @@ mod tests {
         ($name:ident, $pat:expr, $path:expr, $options:expr) => {
             #[test]
             fn $name() {
-                let pat = GlobBuilder::new($pat)
-                    .case_insensitive($options.casei)
-                    .literal_separator($options.litsep)
-                    .build()
-                    .unwrap();
+                let mut builder = GlobBuilder::new($pat);
+                if let Some(casei) = $options.casei {
+                    builder.case_insensitive(casei);
+                }
+                if let Some(litsep) = $options.litsep {
+                    builder.literal_separator(litsep);
+                }
+                if let Some(bsesc) = $options.bsesc {
+                    builder.backslash_escape(bsesc);
+                }
+                let pat = builder.build().unwrap();
                 let matcher = pat.compile_matcher();
                 let strategic = pat.compile_strategic_matcher();
                 let set = GlobSetBuilder::new().add(pat).build().unwrap();
@@ -1127,12 +1146,24 @@ mod tests {
     syntaxerr!(err_range2, "[z--]", ErrorKind::InvalidRange('z', '-'));
 
     const CASEI: Options = Options {
-        casei: true,
-        litsep: false,
+        casei: Some(true),
+        litsep: None,
+        bsesc: None,
     };
     const SLASHLIT: Options = Options {
-        casei: false,
-        litsep: true,
+        casei: None,
+        litsep: Some(true),
+        bsesc: None,
+    };
+    const NOBSESC: Options = Options {
+        casei: None,
+        litsep: None,
+        bsesc: Some(false),
+    };
+    const BSESC: Options = Options {
+        casei: None,
+        litsep: None,
+        bsesc: Some(true),
     };
 
     toregex!(re_casei, "a", "(?i)^a$", &CASEI);
@@ -1245,6 +1276,17 @@ mod tests {
     #[cfg(not(unix))]
     matches!(matchslash5, "abc\\def", "abc/def", SLASHLIT);
 
+    matches!(matchbackslash1, "\\[", "[", BSESC);
+    matches!(matchbackslash2, "\\?", "?", BSESC);
+    matches!(matchbackslash3, "\\*", "*", BSESC);
+    matches!(matchbackslash4, "\\[a-z]", "\\a", NOBSESC);
+    matches!(matchbackslash5, "\\?", "\\a", NOBSESC);
+    matches!(matchbackslash6, "\\*", "\\\\", NOBSESC);
+    #[cfg(unix)]
+    matches!(matchbackslash7, "\\a", "a");
+    #[cfg(not(unix))]
+    matches!(matchbackslash8, "\\a", "/a");
+
     nmatches!(matchnot1, "a*b*c", "abcd");
     nmatches!(matchnot2, "abc*abc*abc", "abcabcabcabcabcabcabca");
     nmatches!(matchnot3, "some/**/needle.txt", "some/other/notthis.txt");
@@ -1289,13 +1331,20 @@ mod tests {
         ($which:ident, $name:ident, $pat:expr, $expect:expr) => {
             extract!($which, $name, $pat, $expect, Options::default());
         };
-        ($which:ident, $name:ident, $pat:expr, $expect:expr, $opts:expr) => {
+        ($which:ident, $name:ident, $pat:expr, $expect:expr, $options:expr) => {
             #[test]
             fn $name() {
-                let pat = GlobBuilder::new($pat)
-                    .case_insensitive($opts.casei)
-                    .literal_separator($opts.litsep)
-                    .build().unwrap();
+                let mut builder = GlobBuilder::new($pat);
+                if let Some(casei) = $options.casei {
+                    builder.case_insensitive(casei);
+                }
+                if let Some(litsep) = $options.litsep {
+                    builder.literal_separator(litsep);
+                }
+                if let Some(bsesc) = $options.bsesc {
+                    builder.backslash_escape(bsesc);
+                }
+                let pat = builder.build().unwrap();
                 assert_eq!($expect, pat.$which());
             }
         };
