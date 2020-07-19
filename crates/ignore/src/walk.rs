@@ -1,4 +1,5 @@
 use std::cmp;
+use std::collections::BinaryHeap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, FileType, Metadata};
@@ -1220,7 +1221,7 @@ impl WalkParallel {
     /// can be merged together into a single data structure.
     pub fn visit(mut self, builder: &mut dyn ParallelVisitorBuilder) {
         let threads = self.threads();
-        let stack = Arc::new(Mutex::new(vec![]));
+        let stack = Arc::new(Mutex::new(BinaryHeap::new()));
         {
             let mut stack = stack.lock().unwrap();
             let mut visitor = builder.build();
@@ -1316,6 +1317,36 @@ enum Message {
     Quit,
 }
 
+fn do_cmp(message1: &Message, message2: &Message) -> std::cmp::Ordering {
+    match (message1, message2) {
+        (Message::Quit, _) => std::cmp::Ordering::Greater,
+        (_, Message::Quit) => std::cmp::Ordering::Less,
+        (Message::Work(work1), Message::Work(work2)) => {
+            work2.dent.dent.path().as_os_str().cmp(work1.dent.dent.path().as_os_str())
+        },
+    }
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        do_cmp(self, other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Message {}
+
+impl Ord for Message {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        do_cmp(self, other)
+    }
+}
+
+impl PartialOrd for Message {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A unit of work for each worker to process.
 ///
 /// Each unit of work corresponds to a directory that should be descended
@@ -1393,7 +1424,7 @@ struct Worker<'s> {
     /// directories in depth first order. This can substantially reduce peak
     /// memory usage by keeping both the number of files path and gitignore
     /// matchers in memory lower.
-    stack: Arc<Mutex<Vec<Message>>>,
+    stack: Arc<Mutex<BinaryHeap<Message>>>,
     /// Whether all workers should terminate at the next opportunity. Note
     /// that we need this because we don't want other `Work` to be done after
     /// we quit. We wouldn't need this if have a priority channel.
